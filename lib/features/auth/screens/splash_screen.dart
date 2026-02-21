@@ -1,19 +1,22 @@
+// lib/features/auth/screens/splash_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
-import '../../../core/router/app_router.dart';
+import '../../../core/router/app_routes.dart';
+import '../providers/firebase_auth_stream_provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-class SplashScreen extends StatefulWidget {
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
+class _SplashScreenState extends ConsumerState<SplashScreen>
     with TickerProviderStateMixin {
   late AnimationController _pulseController;
 
@@ -30,7 +33,17 @@ class _SplashScreenState extends State<SplashScreen>
 
   Future<void> _navigate() async {
     await Future.delayed(const Duration(milliseconds: 2800));
-    if (mounted) {
+    if (!mounted) return;
+
+    final authStream = ref.read(firebaseAuthStreamProvider);
+    final isLoggedIn = authStream.maybeWhen(
+      data: (user) => user != null,
+      orElse: () => false,
+    );
+
+    if (isLoggedIn) {
+      context.go(AppRoutes.home);
+    } else {
       context.go(AppRoutes.auth);
     }
   }
@@ -49,7 +62,6 @@ class _SplashScreenState extends State<SplashScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Logo / Icon area
             AnimatedBuilder(
               animation: _pulseController,
               builder: (context, child) {
@@ -73,11 +85,8 @@ class _SplashScreenState extends State<SplashScreen>
                   ],
                 ),
                 child: const Center(
-                  child: Icon(
-                    Icons.favorite,
-                    color: AppColors.primary,
-                    size: 48,
-                  ),
+                  child:
+                      Icon(Icons.favorite, color: AppColors.primary, size: 48),
                 ),
               ),
             )
@@ -85,8 +94,6 @@ class _SplashScreenState extends State<SplashScreen>
                 .fadeIn(duration: 600.ms)
                 .slideY(begin: -0.2, end: 0, duration: 600.ms),
             const SizedBox(height: 28),
-
-            // App name
             Text(
               AppStrings.appName,
               style: GoogleFonts.poppins(
@@ -99,22 +106,15 @@ class _SplashScreenState extends State<SplashScreen>
                 .animate(delay: 300.ms)
                 .fadeIn(duration: 500.ms)
                 .slideY(begin: 0.2, end: 0, duration: 500.ms),
-
             const SizedBox(height: 8),
-
-            // Tagline
             Text(
               AppStrings.tagline,
               style: GoogleFonts.inter(
                 fontSize: 14,
-                fontWeight: FontWeight.w400,
                 color: AppColors.white.withOpacity(0.85),
               ),
             ).animate(delay: 500.ms).fadeIn(duration: 500.ms),
-
             const SizedBox(height: 60),
-
-            // Loading indicator
             SizedBox(
               width: 32,
               height: 32,

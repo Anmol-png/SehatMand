@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  speech_to_text: ^6.6.0
+  flutter_tts: ^4.0.2
 
   # State Management
   flutter_riverpod: ^2.4.9
@@ -23,17 +25,18 @@ dependencies:
 
   # Icons
   flutter_svg: ^2.0.9
-  phosphor_flutter: ^2.0.1
 
   # Utils
   intl: ^0.19.0
   uuid: ^4.2.2
 
-  # Firebase (Auth + Firestore - stub for now)
-  # firebase_core: ^2.24.2
-  # firebase_auth: ^4.15.3
-  # cloud_firestore: ^4.13.6
-  # google_sign_in: ^6.2.1
+  # HTTP
+  http: ^1.1.0
+
+  # Firebase
+  firebase_core: ^2.24.2
+  firebase_auth: ^4.15.3
+  google_sign_in: ^6.2.1
 
 dev_dependencies:
   flutter_test:
@@ -46,6 +49,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/images/
-    - assets/icons/

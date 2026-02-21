@@ -1,26 +1,42 @@
+// lib/features/my_ai/providers/chat_provider.dart
+//
+// Connects to: POST /api/chat
+// Body: { "message": "...", "mode": "user"|"doctor", "session_id": "..." }
+
+import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../services/api_service.dart';
+import '../../../shared/models/chat_models.dart';
 import '../../../shared/models/message_model.dart';
+import '../../../shared/models/ai_type.dart';
+
+// ── Which AI panel the user is in ───────────────────────
 
 class ChatState {
   final List<MessageModel> messages;
   final bool isTyping;
   final String? error;
+  final ChatResponse? lastResponse;
 
   const ChatState({
     this.messages = const [],
     this.isTyping = false,
     this.error,
+    this.lastResponse,
   });
 
   ChatState copyWith({
     List<MessageModel>? messages,
     bool? isTyping,
     String? error,
+    bool clearError = false,
+    ChatResponse? lastResponse,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
       isTyping: isTyping ?? this.isTyping,
-      error: error,
+      error: clearError ? null : (error ?? this.error),
+      lastResponse: lastResponse ?? this.lastResponse,
     );
   }
 }
@@ -28,14 +44,30 @@ class ChatState {
 class ChatNotifier extends StateNotifier<ChatState> {
   final AiType aiType;
 
+  // Backend expects "user" or "doctor" — NOT 1 or 2
+  String get _mode => aiType == AiType.myAi ? 'user' : 'doctor';
+
+  // Unique session ID per chat instance — backend uses this for memory
+  final String _sessionId = _generateSessionId();
+
   ChatNotifier({required this.aiType}) : super(const ChatState()) {
     _addWelcomeMessage();
   }
 
+  static String _generateSessionId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final rng = Random.secure();
+    return List.generate(12, (_) => chars[rng.nextInt(chars.length)]).join();
+  }
+
   void _addWelcomeMessage() {
     final welcome = aiType == AiType.myAi
-        ? 'Assalamu Alaikum! Main aapka personal health companion hoon. Batayein, kya takleef hai? Aap Urdu ya English dono mein baat kar sakte hain.'
-        : 'Assalamu Alaikum! I\'m Doctor AI. Please describe your symptoms and I\'ll provide appropriate medical guidance. You can type in Urdu or English.';
+        ? 'Assalamu Alaikum! 👋 Main aapka SehatMand AI hoon.\n\n'
+            'Apni takleef batayein — main symptoms sun kar aapki madad karoonga. '
+            'Aap Urdu ya English dono mein likh sakte hain.'
+        : 'Assalamu Alaikum, Doctor! 🩺\n\n'
+            'Please describe the clinical presentation and I will provide '
+            'evidence-based assessment and management guidance.';
 
     state = state.copyWith(
       messages: [MessageModel.aiMessage(welcome)],
@@ -43,74 +75,102 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   Future<void> sendMessage(String content) async {
-    if (content.trim().isEmpty) return;
+    final trimmed = content.trim();
+    if (trimmed.isEmpty) return;
 
-    // Add user message
-    final userMsg = MessageModel.userMessage(content.trim());
+    // 1. Show user message immediately
     state = state.copyWith(
-      messages: [...state.messages, userMsg],
+      messages: [...state.messages, MessageModel.userMessage(trimmed)],
       isTyping: true,
+      clearError: true,
     );
 
     try {
-      // TODO: Call Groq / LLaMA API via Django backend
-      await Future.delayed(const Duration(seconds: 2)); // simulate AI response
+      // 2. Call backend
+      final responseJson = await ApiService.sendMessage(
+        message: trimmed,
+        mode: _mode, // "user" or "doctor"
+        sessionId: _sessionId, // server manages history via session
+      );
 
-      final aiResponse = _getMockResponse(content, aiType);
-      final aiMsg = MessageModel.aiMessage(aiResponse);
+      final chatResponse = ChatResponse.fromJson(responseJson);
+
+      // 3. Build display message
+      MessageModel aiMsg;
+
+      if (chatResponse.isEmergency) {
+        // Emergency — show as a special red card
+        aiMsg = MessageModel.aiMessage(
+          chatResponse.reply,
+          displayType: MessageDisplayType.emergency,
+        );
+      } else if (chatResponse.hasDoctors) {
+        // Has doctor recommendations — build text + attach doctor cards
+        final buffer = StringBuffer(chatResponse.reply);
+        buffer.write('\n\n**Recommended Doctors in Karachi:**');
+        for (int i = 0; i < chatResponse.doctors.length; i++) {
+          final doc = chatResponse.doctors[i];
+          buffer.write('\n${i + 1}. ${doc.displayLine}');
+          if (doc.specialization.isNotEmpty && doc.specialization != 'N/A') {
+            buffer.write('\n   🏥 ${_titleCase(doc.specialization)}');
+          }
+        }
+
+        aiMsg = MessageModel.aiMessage(
+          buffer.toString(),
+          displayType: MessageDisplayType.doctors,
+          doctorCards: chatResponse.doctors
+              .map((d) => {
+                    'name': d.name,
+                    'hospital_name': d.hospitalName,
+                    'specialization': d.specialization,
+                    'phone': d.phone,
+                    'pmdc': d.pmdc,
+                    'city': d.city,
+                  })
+              .toList(),
+        );
+      } else {
+        aiMsg = MessageModel.aiMessage(chatResponse.reply);
+      }
 
       state = state.copyWith(
         messages: [...state.messages, aiMsg],
         isTyping: false,
+        lastResponse: chatResponse,
+      );
+    } on ApiException catch (e) {
+      state = state.copyWith(
+        isTyping: false,
+        error: 'Backend error: ${e.message}',
       );
     } catch (e) {
       state = state.copyWith(
         isTyping: false,
-        error: 'Failed to get response. Please try again.',
+        error: 'Server se connect nahi ho saka. '
+            'Backend chala raha hai? (python app.py)',
       );
     }
   }
 
-  void clearError() {
-    state = state.copyWith(error: null);
-  }
-
-  void clearChat() {
+  // Clears local state AND tells the server to drop the session memory
+  Future<void> clearChat() async {
+    await ApiService.clearSession(_sessionId);
     state = const ChatState();
     _addWelcomeMessage();
   }
 
-  // Mock responses — replace with real API calls
-  String _getMockResponse(String userMessage, AiType type) {
-    final lower = userMessage.toLowerCase();
+  void clearError() => state = state.copyWith(clearError: true);
 
-    if (type == AiType.myAi) {
-      if (lower.contains('headache') || lower.contains('sir dard')) {
-        return 'Headache ke kai reasons ho sakte hain. Kuch sawal puchna chahta hoon:\n\n1. Aapki neend kaisi hai? Kia raat ko 7-8 ghante so rahe hain?\n2. Pani kitna pee rahe hain?\n3. Koi stress ya tension hai?\n\nIn sab ka jawab dein toh main better suggest kar sakta hoon.';
-      }
-      if (lower.contains('heart') || lower.contains('dil')) {
-        return 'Heart specialist ko "Cardiologist" kehte hain. Karachi mein kuch top cardiologists hain:\n\n• Dr. Tahir Saghir – Aga Khan Hospital\n• Dr. Azhar Iqbal – NICVD Karachi\n• Dr. Syed Nadeem – South City Hospital\n\nAga Khan Hospital ka number: 021-34930051\nNICVD: 021-99201271';
-      }
-      return 'Shukriya batane ke liye. Main samajhne ki koshish kar raha hoon. Kya aap thoda aur detail mein bata sakte hain? Jaise ye takleef kab se hai aur kitni teez hai?';
-    } else {
-      // Doctor AI
-      if (lower.contains('fever') || lower.contains('bukhar')) {
-        return '**Fever (Bukhar) – Guidance:**\n\nCommon causes: Viral infection, Flu, Dehydration\n\n**Medications:**\n• Paracetamol 500mg – 1 tablet every 4-6 hrs (max 4 tabs/day)\n• ORS (Oral Rehydration Solution) – stay hydrated\n\n**Home care:** Rest, fluids, cool compress\n\n⚠️ **See a doctor immediately if:** Fever > 103°F, lasts > 3 days, or with rash/difficulty breathing.';
-      }
-      if (lower.contains('ulcer') || lower.contains('stomach')) {
-        return '**Peptic Ulcer – Guidance:**\n\nSymptoms you might have: Burning stomach pain, nausea, bloating\n\n**Medications (OTC):**\n• Omeprazole 20mg – once daily before breakfast\n• Antacids (Maalox/Gaviscon) for quick relief\n\n**Avoid:** Spicy food, tea/coffee, NSAIDs like Ibuprofen\n\n🩺 **Consult:** Gastroenterologist if no improvement in 2 weeks.';
-      }
-      return 'Please describe your symptoms in more detail — including since when, severity (1-10), and any other symptoms. This will help me give you accurate guidance.';
-    }
-  }
+  String _titleCase(String s) => s
+      .split(' ')
+      .map((w) => w.isEmpty ? '' : '${w[0].toUpperCase()}${w.substring(1)}')
+      .join(' ');
 }
 
-// Separate providers for each AI type
-final myAiChatProvider = StateNotifierProvider<ChatNotifier, ChatState>((ref) {
-  return ChatNotifier(aiType: AiType.myAi);
-});
+// ── One provider per AI panel ─────────────────────────────
+final myAiChatProvider = StateNotifierProvider<ChatNotifier, ChatState>(
+    (ref) => ChatNotifier(aiType: AiType.myAi));
 
-final doctorAiChatProvider =
-    StateNotifierProvider<ChatNotifier, ChatState>((ref) {
-  return ChatNotifier(aiType: AiType.doctorAi);
-});
+final doctorAiChatProvider = StateNotifierProvider<ChatNotifier, ChatState>(
+    (ref) => ChatNotifier(aiType: AiType.doctorAi));

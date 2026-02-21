@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../features/hospital/screens/hospital_screen.dart';
-import '../../../shared/models/message_model.dart';
 import '../../../shared/widgets/chat_screen.dart';
 import '../../../shared/widgets/side_panel.dart';
 import '../../../shared/widgets/top_navbar.dart';
 import '../providers/navigation_provider.dart';
+import 'package:sehatmand_pakistan/shared/models/ai_type.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});

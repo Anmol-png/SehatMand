@@ -1,3 +1,4 @@
+// lib/features/auth/widgets/login_form.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
@@ -49,10 +50,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
             const SizedBox(height: 4),
             Text(
               AppStrings.loginSubtitle,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                color: AppColors.greyText,
-              ),
+              style: GoogleFonts.inter(fontSize: 13, color: AppColors.greyText),
             ),
             const SizedBox(height: 24),
 
@@ -136,9 +134,7 @@ class _LoginFormState extends ConsumerState<LoginForm> {
                   text: TextSpan(
                     text: AppStrings.dontHaveAccount,
                     style: GoogleFonts.inter(
-                      fontSize: 13,
-                      color: AppColors.greyText,
-                    ),
+                        fontSize: 13, color: AppColors.greyText),
                     children: [
                       TextSpan(
                         text: AppStrings.signup,

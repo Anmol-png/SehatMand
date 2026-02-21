@@ -1,11 +1,13 @@
+// lib/features/auth/screens/auth_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
-import '../../../core/router/app_router.dart';
+import '../../../core/router/app_routes.dart';
 import '../providers/auth_provider.dart';
+import '../providers/firebase_auth_stream_provider.dart';
 import '../widgets/login_form.dart';
 import '../widgets/signup_form.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -38,18 +40,19 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
   Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
 
-    // Navigate to home when authenticated
-    ref.listen<AuthState>(authProvider, (previous, next) {
-      if (next.isAuthenticated) {
-        context.go(AppRoutes.home);
-      }
+    // Navigate to home when Firebase confirms sign-in
+    ref.listen<AsyncValue<dynamic>>(firebaseAuthStreamProvider, (_, next) {
+      next.whenData((user) {
+        if (user != null && mounted) {
+          context.go(AppRoutes.home);
+        }
+      });
     });
 
     return Scaffold(
       backgroundColor: AppColors.primaryLight,
       body: Stack(
         children: [
-          // Background decoration
           Positioned(
             top: -80,
             right: -80,
@@ -74,23 +77,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               ),
             ),
           ),
-
-          // Main content
           Center(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Logo + Brand
                   _buildBrandHeader()
                       .animate()
                       .fadeIn(duration: 600.ms)
                       .slideY(begin: -0.15, end: 0, duration: 600.ms),
-
                   const SizedBox(height: 40),
-
-                  // Auth Card
                   _buildAuthCard(authState)
                       .animate()
                       .fadeIn(delay: 300.ms, duration: 500.ms)
@@ -115,29 +112,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             color: AppColors.primary,
             shape: BoxShape.circle,
           ),
-          child: const Icon(
-            Icons.favorite,
-            color: AppColors.white,
-            size: 36,
-          ),
+          child: const Icon(Icons.favorite, color: AppColors.white, size: 36),
         ),
         const SizedBox(height: 16),
-        Text(
-          AppStrings.appName,
-          style: GoogleFonts.poppins(
-            fontSize: 26,
-            fontWeight: FontWeight.w700,
-            color: AppColors.primary,
-          ),
-        ),
+        Text(AppStrings.appName,
+            style: GoogleFonts.poppins(
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+              color: AppColors.primary,
+            )),
         const SizedBox(height: 4),
-        Text(
-          AppStrings.tagline,
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            color: AppColors.charcoal.withOpacity(0.65),
-          ),
-        ),
+        Text(AppStrings.tagline,
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              color: AppColors.charcoal.withOpacity(0.65),
+            )),
       ],
     );
   }
@@ -160,43 +149,29 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Tab Switcher
           _buildTabSwitcher(),
-
-          // Error Message
           if (authState.error != null) _buildErrorBanner(authState.error!),
-
-          // Forms
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 350),
             transitionBuilder: (child, animation) {
               final offset =
                   _showLogin ? const Offset(-1, 0) : const Offset(1, 0);
               return SlideTransition(
-                position: Tween<Offset>(
-                  begin: offset,
-                  end: Offset.zero,
-                ).animate(CurvedAnimation(
-                  parent: animation,
-                  curve: Curves.easeInOut,
-                )),
+                position: Tween<Offset>(begin: offset, end: Offset.zero)
+                    .animate(CurvedAnimation(
+                        parent: animation, curve: Curves.easeInOut)),
                 child: child,
               );
             },
             child: _showLogin
                 ? LoginForm(
                     key: const ValueKey('login'),
-                    onSwitchToSignup: _switchToSignup,
-                  )
+                    onSwitchToSignup: _switchToSignup)
                 : SignupForm(
                     key: const ValueKey('signup'),
-                    onSwitchToLogin: _switchToLogin,
-                  ),
+                    onSwitchToLogin: _switchToLogin),
           ),
-
-          // Google Sign In
           _buildGoogleSignIn(authState),
-
           const SizedBox(height: 24),
         ],
       ),
@@ -209,15 +184,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       child: Container(
         height: 48,
         decoration: BoxDecoration(
-          color: AppColors.grey,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          children: [
-            _buildTab(AppStrings.login, _showLogin, () => _switchToLogin()),
-            _buildTab(AppStrings.signup, !_showLogin, () => _switchToSignup()),
-          ],
-        ),
+            color: AppColors.grey, borderRadius: BorderRadius.circular(12)),
+        child: Row(children: [
+          _buildTab(AppStrings.login, _showLogin, _switchToLogin),
+          _buildTab(AppStrings.signup, !_showLogin, _switchToSignup),
+        ]),
       ),
     );
   }
@@ -234,14 +205,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             borderRadius: BorderRadius.circular(8),
           ),
           child: Center(
-            child: Text(
-              label,
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: isActive ? AppColors.white : AppColors.greyText,
-              ),
-            ),
+            child: Text(label,
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: isActive ? AppColors.white : AppColors.greyText,
+                )),
           ),
         ),
       ),
@@ -262,14 +231,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
           const Icon(Icons.error_outline, color: AppColors.error, size: 16),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              error,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                color: AppColors.error,
-              ),
-            ),
-          ),
+              child: Text(error,
+                  style:
+                      GoogleFonts.inter(fontSize: 13, color: AppColors.error))),
           GestureDetector(
             onTap: () => ref.read(authProvider.notifier).clearError(),
             child: const Icon(Icons.close, color: AppColors.error, size: 16),
@@ -284,22 +248,16 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         children: [
-          Row(
-            children: [
-              const Expanded(child: Divider()),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Text(
-                  'or',
+          Row(children: [
+            const Expanded(child: Divider()),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text('or',
                   style: GoogleFonts.inter(
-                    fontSize: 13,
-                    color: AppColors.greyText,
-                  ),
-                ),
-              ),
-              const Expanded(child: Divider()),
-            ],
-          ),
+                      fontSize: 13, color: AppColors.greyText)),
+            ),
+            const Expanded(child: Divider()),
+          ]),
           const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
@@ -308,20 +266,27 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               onPressed: authState.isLoading
                   ? null
                   : () => ref.read(authProvider.notifier).signInWithGoogle(),
-              icon: _GoogleIcon(),
-              label: Text(
-                AppStrings.signInWithGoogle,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.charcoal,
-                ),
+              icon: const SizedBox(
+                width: 20,
+                height: 20,
+                child: Text('G',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF4285F4),
+                    ),
+                    textAlign: TextAlign.center),
               ),
+              label: Text(AppStrings.signInWithGoogle,
+                  style: GoogleFonts.inter(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.charcoal,
+                  )),
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: AppColors.greyMid),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
+                    borderRadius: BorderRadius.circular(12)),
               ),
             ),
           ),
@@ -338,28 +303,5 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
   void _switchToSignup() {
     setState(() => _showLogin = false);
     ref.read(authProvider.notifier).clearError();
-  }
-}
-
-class _GoogleIcon extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 20,
-      height: 20,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        color: Colors.transparent,
-      ),
-      child: const Text(
-        'G',
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w700,
-          color: Color(0xFF4285F4),
-        ),
-        textAlign: TextAlign.center,
-      ),
-    );
   }
 }

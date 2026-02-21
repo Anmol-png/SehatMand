@@ -1,73 +1,99 @@
+// lib/services/api_service.dart
+//
+// Connects to Sehat Mand Pakistan Flask backend.
+// POST /api/chat  — { message, mode, session_id }
+// POST /api/clear — { session_id }
+// GET  /api/health
+
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // ── Change this to your machine's IP when testing on a real device ──
-  // For emulator: 10.0.2.2  |  For real device: your local IP e.g. 192.168.x.x
+  // ── Base URL ────────────────────────────────────────────
+  // Android emulator → use 10.0.2.2:5000
+  // iOS simulator    → use localhost:5000
+  // Physical device  → use your machine's LAN IP, e.g. 192.168.1.x:5000
+  // Web (Chrome dev) → use localhost:5000
+  // Production       → https://your-backend.com
   static const String _baseUrl = 'http://localhost:5000';
 
-  /// Sends a message to the Flask backend.
-  ///
-  /// [message] — the user's text
-  /// [mode]    — 1 for user mode, 2 for doctor mode
-  /// [history] — list of {"role": "user"/"assistant", "content": "..."} maps
-  ///
-  /// Returns the full response map from backend:
-  ///   User mode   → {reply, type, mode, specialist, doctors}
-  ///   Doctor mode → {reply, type, mode, emergency_flag}
+  static const Duration _timeout = Duration(seconds: 30);
+
+  // ── POST /api/chat ──────────────────────────────────────
+  // mode: "user" (My AI tab) | "doctor" (Doctor AI tab)
+  // session_id: unique per conversation, kept on the Notifier
   static Future<Map<String, dynamic>> sendMessage({
     required String message,
-    required int mode,
-    List<Map<String, String>> history = const [],
+    required String mode, // "user" or "doctor"
+    required String sessionId,
   }) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/api/chat'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'message': message,
-              'mode': mode,
-              'history': history,
-            }),
-          )
-          .timeout(const Duration(seconds: 90));
+    final uri = Uri.parse('$_baseUrl/api/chat');
 
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body) as Map<String, dynamic>;
-      } else {
-        // Backend returned an error status
-        final errorBody = jsonDecode(response.body);
-        return {
-          'reply': errorBody['error'] ?? 'Server error: ${response.statusCode}',
-          'type': 'error',
-          'mode': mode == 2 ? 'doctor' : 'user',
-          'emergency_flag': false,
-          'doctors': [],
-        };
-      }
-    } on Exception {
-      // Network error / timeout
-      return {
-        'reply': '⚠️ Server se connection nahi ho pa raha.\n'
-            'Backend chal raha hai? Terminal mein check karein.',
-        'type': 'error',
-        'mode': mode == 2 ? 'doctor' : 'user',
-        'emergency_flag': false,
-        'doctors': [],
-      };
+    final body = jsonEncode({
+      'message': message,
+      'mode': mode, // backend expects "user" or "doctor"
+      'session_id': sessionId,
+    });
+
+    final response = await http
+        .post(
+          uri,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: body,
+        )
+        .timeout(_timeout);
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } else {
+      final err = _parseError(response.body);
+      throw ApiException('Server error ${response.statusCode}: $err');
     }
   }
 
-  /// Health check — returns true if backend is running
+  // ── POST /api/clear (clears server-side session memory) ─
+  static Future<void> clearSession(String sessionId) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/api/clear');
+      await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'session_id': sessionId}),
+          )
+          .timeout(_timeout);
+    } catch (_) {
+      // Best-effort — don't crash the UI if this fails
+    }
+  }
+
+  // ── GET /api/health ─────────────────────────────────────
   static Future<bool> checkHealth() async {
     try {
-      final response = await http
-          .get(Uri.parse('$_baseUrl/api/health'))
-          .timeout(const Duration(seconds: 5));
+      final uri = Uri.parse('$_baseUrl/api/health');
+      final response = await http.get(uri).timeout(_timeout);
       return response.statusCode == 200;
     } catch (_) {
       return false;
     }
   }
+
+  static String _parseError(String body) {
+    try {
+      final json = jsonDecode(body);
+      return json['error'] ?? body;
+    } catch (_) {
+      return body;
+    }
+  }
+}
+
+class ApiException implements Exception {
+  final String message;
+  const ApiException(this.message);
+  @override
+  String toString() => message;
 }

@@ -1,3 +1,4 @@
+// lib/features/auth/widgets/signup_form.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
@@ -54,10 +55,7 @@ class _SignupFormState extends ConsumerState<SignupForm> {
             const SizedBox(height: 4),
             Text(
               AppStrings.signupSubtitle,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                color: AppColors.greyText,
-              ),
+              style: GoogleFonts.inter(fontSize: 13, color: AppColors.greyText),
             ),
             const SizedBox(height: 24),
 
@@ -187,9 +185,7 @@ class _SignupFormState extends ConsumerState<SignupForm> {
                   text: TextSpan(
                     text: AppStrings.alreadyHaveAccount,
                     style: GoogleFonts.inter(
-                      fontSize: 13,
-                      color: AppColors.greyText,
-                    ),
+                        fontSize: 13, color: AppColors.greyText),
                     children: [
                       TextSpan(
                         text: AppStrings.login,

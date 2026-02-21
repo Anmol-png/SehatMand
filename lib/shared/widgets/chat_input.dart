@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -20,24 +21,42 @@ class ChatInput extends StatefulWidget {
 class _ChatInputState extends State<ChatInput> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
+  final stt.SpeechToText _speech = stt.SpeechToText();
+
   bool _hasText = false;
-  bool _isListening = false; // Voice input state
+  bool _isListening = false;
+  bool _speechAvailable = false;
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(() {
       final hasText = _controller.text.trim().isNotEmpty;
-      if (hasText != _hasText) {
-        setState(() => _hasText = hasText);
-      }
+      if (hasText != _hasText) setState(() => _hasText = hasText);
     });
+    _initSpeech();
+  }
+
+  Future<void> _initSpeech() async {
+    final available = await _speech.initialize(
+      onError: (error) {
+        if (mounted) setState(() => _isListening = false);
+      },
+      onStatus: (status) {
+        // "done" or "notListening" means mic stopped
+        if (status == 'done' || status == 'notListening') {
+          if (mounted) setState(() => _isListening = false);
+        }
+      },
+    );
+    if (mounted) setState(() => _speechAvailable = available);
   }
 
   @override
   void dispose() {
     _controller.dispose();
     _focusNode.dispose();
+    _speech.stop();
     super.dispose();
   }
 
@@ -49,20 +68,50 @@ class _ChatInputState extends State<ChatInput> {
     _focusNode.requestFocus();
   }
 
-  void _handleVoiceInput() {
-    // TODO: Integrate speech_to_text package
-    setState(() => _isListening = !_isListening);
-    // Mock: stops listening after 3 seconds
-    if (_isListening) {
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted) {
-          setState(() => _isListening = false);
-          // Simulated voice input
-          _controller.text = 'Mujhe sir dard ho raha hai...';
-          setState(() => _hasText = true);
-        }
-      });
+  Future<void> _handleVoiceInput() async {
+    if (!_speechAvailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Microphone not available on this device.')),
+      );
+      return;
     }
+
+    if (_isListening) {
+      // Stop manually
+      await _speech.stop();
+      setState(() => _isListening = false);
+      return;
+    }
+
+    setState(() => _isListening = true);
+
+    await _speech.listen(
+      onResult: (result) {
+        if (result.finalResult && result.recognizedWords.isNotEmpty) {
+          setState(() {
+            _controller.text = result.recognizedWords;
+            _hasText = true;
+            _isListening = false;
+          });
+          // Move cursor to end
+          _controller.selection = TextSelection.fromPosition(
+            TextPosition(offset: _controller.text.length),
+          );
+        } else if (!result.finalResult) {
+          // Show interim results in the field while speaking
+          _controller.text = result.recognizedWords;
+          _controller.selection = TextSelection.fromPosition(
+            TextPosition(offset: _controller.text.length),
+          );
+        }
+      },
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
+      partialResults: true,
+      localeId: 'en_US', // works for both English and Urdu Roman input
+      cancelOnError: true,
+    );
   }
 
   @override

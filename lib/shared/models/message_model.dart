@@ -1,56 +1,66 @@
-import 'package:uuid/uuid.dart';
+// lib/shared/models/message_model.dart
 
 enum MessageSender { user, ai }
 
-enum AiType { myAi, doctorAi }
+enum MessageDisplayType {
+  text,
+  emergency,
+  doctors,
+  loading, // typing indicator
+}
 
 class MessageModel {
   final String id;
   final String content;
   final MessageSender sender;
   final DateTime timestamp;
-  final bool isLoading;
+  final MessageDisplayType displayType;
+  final List<Map<String, dynamic>> doctorCards;
 
-  MessageModel({
-    String? id,
+  const MessageModel({
+    required this.id,
     required this.content,
     required this.sender,
-    DateTime? timestamp,
-    this.isLoading = false,
-  })  : id = id ?? const Uuid().v4(),
-        timestamp = timestamp ?? DateTime.now();
+    required this.timestamp,
+    this.displayType = MessageDisplayType.text,
+    this.doctorCards = const [],
+  });
 
-  MessageModel copyWith({
-    String? id,
-    String? content,
-    MessageSender? sender,
-    DateTime? timestamp,
-    bool? isLoading,
-  }) {
-    return MessageModel(
-      id: id ?? this.id,
-      content: content ?? this.content,
-      sender: sender ?? this.sender,
-      timestamp: timestamp ?? this.timestamp,
-      isLoading: isLoading ?? this.isLoading,
-    );
-  }
+  // ── Convenience getters ───────────────────────────────────
+  bool get isUser => sender == MessageSender.user;
+  bool get isAi => sender == MessageSender.ai;
+  bool get isLoading => displayType == MessageDisplayType.loading;
 
+  // ── Factories ─────────────────────────────────────────────
   factory MessageModel.userMessage(String content) => MessageModel(
+        id: _uid(),
         content: content,
         sender: MessageSender.user,
+        timestamp: DateTime.now(),
       );
 
-  factory MessageModel.aiMessage(String content, {bool isLoading = false}) =>
+  factory MessageModel.aiMessage(
+    String content, {
+    MessageDisplayType displayType = MessageDisplayType.text,
+    List<Map<String, dynamic>> doctorCards = const [],
+  }) =>
       MessageModel(
+        id: _uid(),
         content: content,
         sender: MessageSender.ai,
-        isLoading: isLoading,
+        timestamp: DateTime.now(),
+        displayType: displayType,
+        doctorCards: doctorCards,
       );
 
+  /// Typing indicator bubble — shown while waiting for backend response
   factory MessageModel.loadingMessage() => MessageModel(
+        id: _uid(),
         content: '',
         sender: MessageSender.ai,
-        isLoading: true,
+        timestamp: DateTime.now(),
+        displayType: MessageDisplayType.loading,
       );
+
+  static String _uid() => DateTime.now().microsecondsSinceEpoch.toString();
 }

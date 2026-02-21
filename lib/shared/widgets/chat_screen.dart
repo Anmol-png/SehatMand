@@ -8,6 +8,7 @@ import '../../shared/models/message_model.dart';
 import 'chat_bubble.dart';
 import 'chat_input.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sehatmand_pakistan/shared/models/ai_type.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final AiType aiType;
@@ -129,7 +130,7 @@ class _ChatHeader extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         gradient: LinearGradient(
           colors: [
             AppColors.primarySurface,
@@ -138,7 +139,7 @@ class _ChatHeader extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        border: const Border(
+        border: Border(
           bottom: BorderSide(color: AppColors.sidebarBorder),
         ),
       ),

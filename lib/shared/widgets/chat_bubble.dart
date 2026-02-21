@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../core/constants/app_colors.dart';
 import '../../shared/models/message_model.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sehatmand_pakistan/shared/models/ai_type.dart';
 
 class ChatBubble extends StatelessWidget {
   final MessageModel message;
