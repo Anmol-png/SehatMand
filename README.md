@@ -342,7 +342,7 @@ The intent detector recognizes **14+ specializations** in both English and Roman
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Anmol-png/SehatMand
+git clone https://github.com/Anmol-png/SehatMandPakistan
 cd SehatMand-Pakistan
 ```
 
