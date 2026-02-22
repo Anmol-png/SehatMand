@@ -45,10 +45,73 @@
 
   <!-- Google Sign-In GSI script -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBMZ3s4HJcXq4IFEPtijhCtxXwr-LvJ6r0"></script>
 </head>
 <body>
   <!-- This script installs a service worker to provide PWA functionality
        for the Flutter app. See https://developers.google.com/web/fundamentals/primers/service-workers -->
+
+    <script>
+    (function () {
+      var recognition = null;
+
+      // Flutter → JS: start listening
+      window.addEventListener('flutter_start_speech', function () {
+        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) {
+          window.dispatchEvent(new CustomEvent('flutter_speech_end',
+            { detail: 'not_supported' }));
+          return;
+        }
+
+        if (recognition) { try { recognition.abort(); } catch (e) {} }
+
+        recognition               = new SR();
+        recognition.continuous    = true;
+        recognition.interimResults= true;
+        recognition.lang          = 'en-US';
+
+        recognition.onresult = function (e) {
+          var transcript = '';
+          var isFinal    = false;
+          for (var i = e.resultIndex; i < e.results.length; i++) {
+            transcript += e.results[i][0].transcript;
+            if (e.results[i].isFinal) isFinal = true;
+          }
+          console.log('[Speech] result:', transcript, 'final:', isFinal);
+          window.dispatchEvent(new CustomEvent('flutter_speech_result', {
+            detail: { transcript: transcript, isFinal: isFinal }
+          }));
+        };
+
+        recognition.onerror = function (e) {
+          console.log('[Speech] error:', e.error);
+          window.dispatchEvent(new CustomEvent('flutter_speech_end',
+            { detail: e.error }));
+        };
+
+        recognition.onend = function () {
+          console.log('[Speech] ended');
+          window.dispatchEvent(new CustomEvent('flutter_speech_end',
+            { detail: 'done' }));
+        };
+
+        recognition.start();
+        console.log('[Speech] started');
+      });
+
+      // Flutter → JS: stop listening
+      window.addEventListener('flutter_stop_speech', function () {
+        if (recognition) {
+          try { recognition.stop(); } catch (e) {}
+          recognition = null;
+          console.log('[Speech] stopped by Flutter');
+        }
+      });
+    })();
+  </script>
+</head>
+<body>
   <script>
     var serviceWorkerVersion = null;
     var scriptLoaded = false;

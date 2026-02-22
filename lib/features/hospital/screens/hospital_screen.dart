@@ -1,49 +1,58 @@
+// lib/features/hospital/screens/hospital_screen.dart
+//
+// Uses FREE OpenStreetMap data via Flask backend.
+// No Google billing. No API key needed.
+
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-// Mock hospital data for Karachi
-const _mockHospitals = [
-  {
-    'name': 'Aga Khan University Hospital',
-    'address': 'Stadium Road, Karachi',
-    'distance': '1.2 km',
-    'phone': '021-34930051',
-    'specialties': ['Emergency', 'Cardiology', 'Oncology'],
-    'rating': 4.8,
-    'open': true,
-  },
-  {
-    'name': 'Liaquat National Hospital',
-    'address': 'Stadium Road, Karachi',
-    'distance': '2.1 km',
-    'phone': '021-34412000',
-    'specialties': ['Emergency', 'Orthopedics', 'Neurology'],
-    'rating': 4.5,
-    'open': true,
-  },
-  {
-    'name': 'South City Hospital',
-    'address': 'DHA Phase II, Karachi',
-    'distance': '3.4 km',
-    'phone': '021-35393000',
-    'specialties': ['Cardiology', 'Gynecology', 'Pediatrics'],
-    'rating': 4.3,
-    'open': true,
-  },
-  {
-    'name': 'Indus Hospital',
-    'address': 'Korangi, Karachi',
-    'distance': '5.7 km',
-    'phone': '021-35112709',
-    'specialties': ['Emergency', 'General Surgery', 'Cancer Care'],
-    'rating': 4.6,
-    'open': false,
-  },
-];
+// Backend base URL — same as api_service.dart
+const String _backendBase = 'http://localhost:5000';
+const int _searchRadiusMetres = 10000; // 10 km for better coverage in Pakistan
 
+// ── Data model ────────────────────────────────────────────────────────────────
+class _Hospital {
+  final String placeId;
+  final String name;
+  final String address;
+  final String phone;
+  final LatLng position;
+  final double distanceKm;
+
+  const _Hospital({
+    required this.placeId,
+    required this.name,
+    required this.address,
+    required this.phone,
+    required this.position,
+    required this.distanceKm,
+  });
+
+  factory _Hospital.fromJson(Map<String, dynamic> json) {
+    final geo = json['geometry']['location'];
+    return _Hospital(
+      placeId: json['place_id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Unknown Hospital',
+      address: json['vicinity'] as String? ?? '',
+      phone: json['phone'] as String? ?? '',
+      position: LatLng(
+        (geo['lat'] as num).toDouble(),
+        (geo['lng'] as num).toDouble(),
+      ),
+      distanceKm: (json['distance_km'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 class HospitalScreen extends StatefulWidget {
   const HospitalScreen({super.key});
 
@@ -52,20 +61,140 @@ class HospitalScreen extends StatefulWidget {
 }
 
 class _HospitalScreenState extends State<HospitalScreen> {
-  // ignore: unused_field
-  bool _locationGranted = false;
   bool _isLoading = false;
   bool _showResults = false;
+  String? _errorMessage;
+
+  LatLng? _userLocation;
+  List<_Hospital> _hospitals = [];
+
+  final Completer<GoogleMapController> _mapController = Completer();
+  final Set<Marker> _markers = {};
+  int? _selectedIndex;
 
   Future<void> _findHospitals() async {
-    setState(() => _isLoading = true);
-    // TODO: Integrate with google_maps_flutter and geolocator
-    await Future.delayed(const Duration(seconds: 2));
     setState(() {
-      _isLoading = false;
-      _locationGranted = true;
-      _showResults = true;
+      _isLoading = true;
+      _errorMessage = null;
     });
+
+    try {
+      final pos = await _getLocation();
+      _userLocation = LatLng(pos.latitude, pos.longitude);
+
+      final hospitals = await _fetchHospitals(_userLocation!);
+      _hospitals = hospitals; // already sorted by backend
+      _buildMarkers();
+
+      setState(() {
+        _isLoading = false;
+        _showResults = true;
+      });
+
+      final ctrl = await _mapController.future;
+      await ctrl.animateCamera(CameraUpdate.newCameraPosition(
+        CameraPosition(target: _userLocation!, zoom: 13),
+      ));
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Future<Position> _getLocation() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      throw Exception(
+          'Location services disabled. Enable them in your browser settings.');
+    }
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) {
+      perm = await Geolocator.requestPermission();
+      if (perm == LocationPermission.denied) {
+        throw Exception(
+            'Location permission denied. Please allow it and try again.');
+      }
+    }
+    if (perm == LocationPermission.deniedForever) {
+      throw Exception(
+          'Location permanently denied. Enable it in browser settings.');
+    }
+    return Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high);
+  }
+
+  Future<List<_Hospital>> _fetchHospitals(LatLng origin) async {
+    final uri = Uri.parse('$_backendBase/api/places/nearby').replace(
+      queryParameters: {
+        'lat': '${origin.latitude}',
+        'lng': '${origin.longitude}',
+        'radius': '$_searchRadiusMetres',
+      },
+    );
+
+    final response = await http.get(uri).timeout(const Duration(seconds: 25));
+
+    if (response.statusCode != 200) {
+      throw Exception('Server error ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final status = data['status'] as String? ?? 'UNKNOWN';
+
+    if (status == 'ZERO_RESULTS') return [];
+    if (status != 'OK') throw Exception('Search error: $status');
+
+    return (data['results'] as List)
+        .map((r) => _Hospital.fromJson(r as Map<String, dynamic>))
+        .toList();
+  }
+
+  void _buildMarkers() {
+    _markers.clear();
+
+    // Blue = user
+    if (_userLocation != null) {
+      _markers.add(Marker(
+        markerId: const MarkerId('user'),
+        position: _userLocation!,
+        infoWindow: const InfoWindow(title: 'You are here'),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      ));
+    }
+
+    // Red = hospitals
+    for (int i = 0; i < _hospitals.length; i++) {
+      final h = _hospitals[i];
+      _markers.add(Marker(
+        markerId: MarkerId('h_$i'),
+        position: h.position,
+        infoWindow: InfoWindow(
+          title: h.name,
+          snippet: '${h.distanceKm.toStringAsFixed(1)} km away',
+        ),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+        onTap: () => _onMarkerTap(i),
+      ));
+    }
+  }
+
+  Future<void> _onMarkerTap(int index) async {
+    setState(() => _selectedIndex = index);
+    final ctrl = await _mapController.future;
+    await ctrl.animateCamera(CameraUpdate.newCameraPosition(
+      CameraPosition(target: _hospitals[index].position, zoom: 15.5),
+    ));
+  }
+
+  Future<void> _flyToHospital(int index) async {
+    setState(() => _selectedIndex = index);
+    final ctrl = await _mapController.future;
+    await ctrl.animateCamera(CameraUpdate.newCameraPosition(
+      CameraPosition(target: _hospitals[index].position, zoom: 15.5),
+    ));
+    await ctrl.showMarkerInfoWindow(MarkerId('h_$index'));
   }
 
   @override
@@ -75,9 +204,17 @@ class _HospitalScreenState extends State<HospitalScreen> {
         _HospitalHeader(),
         Expanded(
           child: _showResults
-              ? _ResultsView()
+              ? _ResultsView(
+                  markers: _markers,
+                  mapController: _mapController,
+                  hospitals: _hospitals,
+                  userLocation: _userLocation,
+                  selectedIndex: _selectedIndex,
+                  onCardTap: _flyToHospital,
+                )
               : _RequestLocationView(
                   isLoading: _isLoading,
+                  errorMessage: _errorMessage,
                   onFindHospitals: _findHospitals,
                 ),
         ),
@@ -86,6 +223,7 @@ class _HospitalScreenState extends State<HospitalScreen> {
   }
 }
 
+// ── Header ────────────────────────────────────────────────────────────────────
 class _HospitalHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -94,9 +232,7 @@ class _HospitalHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       decoration: const BoxDecoration(
         color: AppColors.white,
-        border: Border(
-          bottom: BorderSide(color: AppColors.sidebarBorder),
-        ),
+        border: Border(bottom: BorderSide(color: AppColors.sidebarBorder)),
       ),
       child: Row(
         children: [
@@ -114,31 +250,21 @@ class _HospitalHeader extends StatelessWidget {
                 ),
               ],
             ),
-            child: const Icon(
-              Icons.local_hospital,
-              color: AppColors.white,
-              size: 26,
-            ),
+            child: const Icon(Icons.local_hospital,
+                color: AppColors.white, size: 26),
           ),
           const SizedBox(width: 14),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                AppStrings.hospitalTitle,
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.charcoal,
-                ),
-              ),
-              Text(
-                'Karachi, Pakistan',
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  color: AppColors.greyText,
-                ),
-              ),
+              Text(AppStrings.hospitalTitle,
+                  style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.charcoal)),
+              Text('Live • Free via OpenStreetMap',
+                  style: GoogleFonts.inter(
+                      fontSize: 12, color: AppColors.greyText)),
             ],
           ),
         ],
@@ -147,133 +273,229 @@ class _HospitalHeader extends StatelessWidget {
   }
 }
 
+// ── Request location ──────────────────────────────────────────────────────────
 class _RequestLocationView extends StatelessWidget {
   final bool isLoading;
+  final String? errorMessage;
   final VoidCallback onFindHospitals;
 
   const _RequestLocationView({
     required this.isLoading,
+    required this.errorMessage,
     required this.onFindHospitals,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 120,
-              height: 120,
-              decoration: const BoxDecoration(
-                color: AppColors.primarySurface,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.location_on_outlined,
-                size: 56,
-                color: AppColors.primary,
-              ),
-            )
-                .animate()
-                .fadeIn(duration: 500.ms)
-                .scale(begin: const Offset(0.8, 0.8), end: const Offset(1, 1)),
-            const SizedBox(height: 28),
-            Text(
-              AppStrings.hospitalTitle,
-              style: GoogleFonts.poppins(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: AppColors.charcoal,
-              ),
-              textAlign: TextAlign.center,
-            ).animate(delay: 200.ms).fadeIn(duration: 400.ms),
-            const SizedBox(height: 10),
-            Text(
-              'We\'ll locate the nearest hospitals in Karachi and show them on the map with directions.',
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                color: AppColors.greyText,
-                height: 1.6,
-              ),
-              textAlign: TextAlign.center,
-            ).animate(delay: 300.ms).fadeIn(duration: 400.ms),
-            const SizedBox(height: 36),
-            SizedBox(
-              width: 260,
-              height: 52,
-              child: ElevatedButton.icon(
-                onPressed: isLoading ? null : onFindHospitals,
-                icon: isLoading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: AppColors.white,
-                        ),
-                      )
-                    : const Icon(Icons.my_location, size: 20),
-                label: Text(
-                  isLoading ? 'Getting location...' : AppStrings.findHospitals,
-                  style: GoogleFonts.inter(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 110,
+                height: 110,
+                decoration: const BoxDecoration(
+                  color: AppColors.primarySurface,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.location_on_outlined,
+                    size: 52, color: AppColors.primary),
+              ).animate().fadeIn(duration: 500.ms).scale(
+                  begin: const Offset(0.8, 0.8), end: const Offset(1, 1)),
+              const SizedBox(height: 24),
+              Text(AppStrings.hospitalTitle,
+                      style: GoogleFonts.poppins(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.charcoal),
+                      textAlign: TextAlign.center)
+                  .animate(delay: 200.ms)
+                  .fadeIn(duration: 400.ms),
+              const SizedBox(height: 8),
+              Text(
+                'Find real hospitals near you — completely free using OpenStreetMap.',
+                style: GoogleFonts.inter(
+                    fontSize: 13, color: AppColors.greyText, height: 1.6),
+                textAlign: TextAlign.center,
+              ).animate(delay: 300.ms).fadeIn(duration: 400.ms),
+
+              // Free badge
+              const SizedBox(height: 12),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.success.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.success.withOpacity(0.3)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.check_circle_outline,
+                        color: AppColors.success, size: 15),
+                    const SizedBox(width: 6),
+                    Text('100% Free • No billing required',
+                        style: GoogleFonts.inter(
+                            fontSize: 12,
+                            color: AppColors.success,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ).animate(delay: 350.ms).fadeIn(duration: 400.ms),
+
+              // Error
+              if (errorMessage != null) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.error_outline,
+                          color: AppColors.error, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(errorMessage!,
+                            style: GoogleFonts.inter(
+                                fontSize: 13, color: AppColors.error)),
+                      ),
+                    ],
                   ),
                 ),
-              ),
-            ).animate(delay: 400.ms).fadeIn(duration: 400.ms),
-            const SizedBox(height: 16),
-            Text(
-              '📍 Currently available for Karachi only',
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                color: AppColors.greyText,
-              ),
-            ).animate(delay: 500.ms).fadeIn(duration: 400.ms),
-          ],
+              ],
+
+              const SizedBox(height: 24),
+              SizedBox(
+                width: 280,
+                height: 52,
+                child: ElevatedButton.icon(
+                  onPressed: isLoading ? null : onFindHospitals,
+                  icon: isLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2.5, color: AppColors.white))
+                      : const Icon(Icons.my_location, size: 20),
+                  label: Text(
+                    isLoading ? 'Searching...' : AppStrings.findHospitals,
+                    style: GoogleFonts.inter(
+                        fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ).animate(delay: 400.ms).fadeIn(duration: 400.ms),
+              const SizedBox(height: 12),
+              Text('📡 Searches within 10 km of your location',
+                      style: GoogleFonts.inter(
+                          fontSize: 12, color: AppColors.greyText))
+                  .animate(delay: 500.ms)
+                  .fadeIn(duration: 400.ms),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
+// ── Results ───────────────────────────────────────────────────────────────────
 class _ResultsView extends StatelessWidget {
+  final Set<Marker> markers;
+  final Completer<GoogleMapController> mapController;
+  final List<_Hospital> hospitals;
+  final LatLng? userLocation;
+  final int? selectedIndex;
+  final void Function(int) onCardTap;
+
+  const _ResultsView({
+    required this.markers,
+    required this.mapController,
+    required this.hospitals,
+    required this.userLocation,
+    required this.selectedIndex,
+    required this.onCardTap,
+  });
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Map placeholder
-        _MapPlaceholder(),
-
-        // Hospital list
-        Expanded(
-          child: ListView(
+        // Map
+        SizedBox(
+          height: 260,
+          child: Padding(
             padding: const EdgeInsets.all(16),
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12, left: 4),
-                child: Text(
-                  'Nearest Hospitals',
-                  style: GoogleFonts.poppins(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.charcoal,
-                  ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: GoogleMap(
+                initialCameraPosition: CameraPosition(
+                  target: userLocation ?? const LatLng(24.8607, 67.0104),
+                  zoom: 13,
                 ),
+                onMapCreated: (ctrl) {
+                  if (!mapController.isCompleted) mapController.complete(ctrl);
+                },
+                markers: markers,
+                myLocationEnabled: true,
+                myLocationButtonEnabled: true,
+                zoomControlsEnabled: true,
+                mapToolbarEnabled: false,
+                compassEnabled: true,
               ),
-              ..._mockHospitals.asMap().entries.map(
-                    (e) => _HospitalCard(
-                      hospital: e.value,
-                      rank: e.key + 1,
-                    )
-                        .animate(delay: Duration(milliseconds: e.key * 100))
-                        .fadeIn(duration: 300.ms)
-                        .slideX(begin: 0.05, end: 0, duration: 300.ms),
-                  ),
+            ),
+          ),
+        ),
+
+        // Count bar
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          child: Row(
+            children: [
+              const Icon(Icons.location_on, color: AppColors.primary, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                '${hospitals.length} hospitals found near you',
+                style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.charcoal),
+              ),
+              const Spacer(),
+              // OSM credit
+              Text('© OpenStreetMap',
+                  style: GoogleFonts.inter(
+                      fontSize: 10, color: AppColors.greyText)),
             ],
+          ),
+        ),
+
+        // List
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            itemCount: hospitals.length,
+            itemBuilder: (context, i) => _HospitalCard(
+              hospital: hospitals[i],
+              rank: i + 1,
+              isSelected: selectedIndex == i,
+              onTap: () => onCardTap(i),
+            )
+                .animate(delay: Duration(milliseconds: i * 60))
+                .fadeIn(duration: 300.ms)
+                .slideX(begin: 0.04, end: 0, duration: 300.ms),
           ),
         ),
       ],
@@ -281,300 +503,164 @@ class _ResultsView extends StatelessWidget {
   }
 }
 
-class _MapPlaceholder extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 220,
-      width: double.infinity,
-      margin: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.grey,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.greyMid),
-      ),
-      child: Stack(
-        children: [
-          // Fake map background
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Color(0xFFE8F5E9), Color(0xFFE3F2FD)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-            ),
-          ),
-          // Map grid lines (visual representation)
-          CustomPaint(
-            painter: _MapGridPainter(),
-            child: Container(),
-          ),
-          // Center overlay
-          Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.map_outlined,
-                    color: AppColors.primary,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Google Maps Integration\n(Coming Soon)',
-                    style: GoogleFonts.inter(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.charcoal,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          // Hospital pins
-          ..._buildPins(),
-        ],
-      ),
-    );
-  }
-
-  List<Widget> _buildPins() {
-    const positions = [
-      Offset(0.3, 0.4),
-      Offset(0.55, 0.35),
-      Offset(0.7, 0.6),
-      Offset(0.25, 0.65),
-    ];
-
-    return positions.asMap().entries.map((e) {
-      return Positioned(
-        left: e.value.dx * 300,
-        top: e.value.dy * 200,
-        child: const Icon(
-          Icons.location_on,
-          color: AppColors.coral,
-          size: 28,
-        ),
-      );
-    }).toList();
-  }
-}
-
-class _MapGridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.grey.withOpacity(0.15)
-      ..strokeWidth = 1;
-
-    for (double i = 0; i < size.width; i += 40) {
-      canvas.drawLine(Offset(i, 0), Offset(i, size.height), paint);
-    }
-    for (double i = 0; i < size.height; i += 40) {
-      canvas.drawLine(Offset(0, i), Offset(size.width, i), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_) => false;
-}
-
+// ── Card ──────────────────────────────────────────────────────────────────────
 class _HospitalCard extends StatelessWidget {
-  final Map<String, dynamic> hospital;
+  final _Hospital hospital;
   final int rank;
+  final bool isSelected;
+  final VoidCallback onTap;
 
-  const _HospitalCard({required this.hospital, required this.rank});
+  const _HospitalCard({
+    required this.hospital,
+    required this.rank,
+    required this.isSelected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final isOpen = hospital['open'] as bool;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: AppColors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.cardBorder),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 12,
-            offset: const Offset(0, 2),
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: AppColors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : AppColors.cardBorder,
+            width: isSelected ? 2 : 1,
           ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Rank badge
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: rank == 1 ? AppColors.primary : AppColors.primarySurface,
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: Text(
-                  '$rank',
-                  style: GoogleFonts.poppins(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: rank == 1 ? AppColors.white : AppColors.primary,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 14),
-
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          hospital['name'] as String,
-                          style: GoogleFonts.poppins(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.charcoal,
-                          ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          color: isOpen
-                              ? AppColors.success.withOpacity(0.1)
-                              : AppColors.coral.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          isOpen ? 'Open' : 'Closed',
-                          style: GoogleFonts.inter(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: isOpen ? AppColors.success : AppColors.coral,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.location_on_outlined,
-                        size: 14,
-                        color: AppColors.greyText,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        hospital['address'] as String,
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: AppColors.greyText,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        hospital['distance'] as String,
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.primary,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-
-                  // Specialties chips
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: (hospital['specialties'] as List<String>)
-                        .map(
-                          (s) => Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.primaryLight,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              s,
-                              style: GoogleFonts.inter(
-                                fontSize: 11,
-                                color: AppColors.primaryDark,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                  const SizedBox(height: 10),
-
-                  // Actions
-                  Row(
-                    children: [
-                      _ActionButton(
-                        icon: Icons.phone_outlined,
-                        label: hospital['phone'] as String,
-                        onTap: () {
-                          // TODO: launch phone call
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      _ActionButton(
-                        icon: Icons.directions_outlined,
-                        label: 'Directions',
-                        onTap: () {
-                          // TODO: launch maps
-                        },
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+          boxShadow: [
+            BoxShadow(
+              color: isSelected
+                  ? AppColors.primary.withOpacity(0.12)
+                  : Colors.black.withOpacity(0.04),
+              blurRadius: isSelected ? 16 : 10,
+              offset: const Offset(0, 2),
             ),
           ],
         ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Rank badge
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color:
+                      rank == 1 ? AppColors.primary : AppColors.primarySurface,
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Text('$rank',
+                      style: GoogleFonts.poppins(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color:
+                              rank == 1 ? AppColors.white : AppColors.primary)),
+                ),
+              ),
+              const SizedBox(width: 14),
+
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Name + distance
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(hospital.name,
+                              style: GoogleFonts.poppins(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.charcoal)),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '${hospital.distanceKm.toStringAsFixed(1)} km',
+                          style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.primary),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+
+                    // Address
+                    if (hospital.address.isNotEmpty)
+                      Row(
+                        children: [
+                          const Icon(Icons.location_on_outlined,
+                              size: 13, color: AppColors.greyText),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(hospital.address,
+                                style: GoogleFonts.inter(
+                                    fontSize: 12, color: AppColors.greyText),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                        ],
+                      ),
+
+                    // Phone
+                    if (hospital.phone.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Icon(Icons.phone_outlined,
+                              size: 13, color: AppColors.greyText),
+                          const SizedBox(width: 4),
+                          Text(hospital.phone,
+                              style: GoogleFonts.inter(
+                                  fontSize: 12, color: AppColors.greyText)),
+                        ],
+                      ),
+                    ],
+
+                    const SizedBox(height: 10),
+
+                    // Buttons
+                    Row(
+                      children: [
+                        _ActionButton(
+                          icon: Icons.map_outlined,
+                          label: 'View on Map',
+                          onTap: onTap,
+                        ),
+                        const SizedBox(width: 8),
+                        _ActionButton(
+                          icon: Icons.directions_outlined,
+                          label: 'Directions',
+                          onTap: () {
+                            final url = 'https://www.google.com/maps/dir/?api=1'
+                                '&destination=${hospital.position.latitude}'
+                                ',${hospital.position.longitude}';
+                            debugPrint('Directions: $url');
+                            // add url_launcher to open in browser
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
+// ── Action button ─────────────────────────────────────────────────────────────
 class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -601,14 +687,11 @@ class _ActionButton extends StatelessWidget {
           children: [
             Icon(icon, size: 14, color: AppColors.primary),
             const SizedBox(width: 5),
-            Text(
-              label,
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: AppColors.primary,
-              ),
-            ),
+            Text(label,
+                style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.primary)),
           ],
         ),
       ),

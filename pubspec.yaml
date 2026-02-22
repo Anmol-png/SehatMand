@@ -38,6 +38,11 @@ dependencies:
   firebase_auth: ^4.15.3
   google_sign_in: ^6.2.1
 
+  # Maps & Location
+  google_maps_flutter: ^2.6.0
+  google_maps_flutter_web: ^0.5.4
+  geolocator: ^11.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
